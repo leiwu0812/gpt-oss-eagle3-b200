@@ -1,0 +1,41 @@
+# Eagle3 training recipe for gpt-oss-120b — overrides modelopt's default
+# eagle3.yaml. Keep the file beside the launch script and point launch_train.sh
+# at it with --config.
+
+defaults:
+  - ../../../Model-Optimizer/modelopt_recipes/general/speculative_decoding/eagle3.yaml
+  - _self_
+
+model:
+  model_name_or_path: /data/models/gpt-oss-120b
+  # Offline training: we read teacher hidden states from disk.
+  trust_remote_code: true
+
+data:
+  offline_data_path: /data/hidden_states/gpt-oss-120b
+  # If you calibrated a draft vocab (step 6 optional), point to its d2t.pt here.
+  # draft_vocab_cache: /data/draft_vocab/d2t.pt
+
+eagle:
+  # gpt-oss is a Llama-family decoder (RoPE, GQA). 1-layer EAGLE3 head is the
+  # default; bump to 2 if you have spare compute and want a higher acceptance rate.
+  eagle_architecture_config:
+    num_hidden_layers: 1
+    intermediate_size: 8192
+    # Uncomment to use a compressed draft vocab from scripts/calibrate_draft_vocab.py
+    # draft_vocab_size: 32000
+
+training:
+  output_dir: /data/ckpts/gpt-oss-120b-eagle3
+  num_train_epochs: 1
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  bf16: true
+  logging_steps: 10
+  save_steps: 1000
+  save_total_limit: 3
+  # Long-context training across ranks (optional).
+  # cp_size: 2
