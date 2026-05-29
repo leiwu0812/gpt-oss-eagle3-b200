@@ -43,6 +43,8 @@ matched stack. All three share the same `/data` volume.
 0_run_training_container.sh     # host  : start gpt-oss-train
 1_setup_training_container.sh   # train : install modelopt + HF, download gpt-oss-120b
 2_prepare_prompts.sh            # train : build prompt skeletons → /data/prompts/active
+prompts_data_config.smoke.yaml  #       smoke-test mix (UltraChat, 10K)
+prompts_data_config.full.yaml   #       full mix (UltraChat + Magpie 300K, ~503K)
 3a_start_vllm_container.sh      # host  : start vllm-gpt-oss (TP=8, EP on)
 3b_synthesize.sh                # train : server_generate.py → /data/synthetic/train.jsonl
 4_dump_hidden_states.sh         # train : HF-backend teacher hidden states → /data/hidden_states
@@ -61,6 +63,7 @@ All shell scripts honor these env vars (defaults in parens):
 | `PORT` | `8000` | vLLM / TRT-LLM HTTP port |
 | `BASE_MODEL` | `/data/models/gpt-oss-120b` | Teacher path inside containers |
 | `PROMPTS` | `/data/prompts/active/train.jsonl` | Switch to `train.small.jsonl` for smoke tests |
+| `DATA_SCALE` | `smoke` | `smoke` (10K UltraChat) or `full` (~503K, matches NVIDIA official) |
 
 ---
 
@@ -90,20 +93,25 @@ What it does:
 - Clones `NVIDIA/Model-Optimizer`.
 - Installs `nvidia-modelopt[hf]` + the speculative_decoding `requirements.txt`.
 - Pins `transformers<4.57` (modelopt warns on newer).
-- `huggingface-cli download openai/gpt-oss-120b` → `/data/models/gpt-oss-120b` (~240 GB; incremental on rerun).
+- `huggingface-cli download openai/gpt-oss-120b` → `/data/models/gpt-oss-120b` (~61 GiB MXFP4 checkpoint; incremental on rerun).
 
 Final line should print modelopt/torch/transformers versions with no traceback.
 
 ### Step 2 — Train container: prompt skeletons
 
 ```bash
+# smoke (default): 10K UltraChat prompt skeletons
 bash /workspace/gpt-oss-eagle3/2_prepare_prompts.sh
+
+# full-scale (matches nvidia/gpt-oss-120b-Eagle3-long-context ~503K mix):
+DATA_SCALE=full bash /workspace/gpt-oss-eagle3/2_prepare_prompts.sh
+
 ls /data/prompts/active/        # expect train.jsonl
 head -1 /data/prompts/active/train.jsonl | python -m json.tool
 ```
 
-Defaults to UltraChat (open). Nemotron PTv2 block is commented — uncomment after
-HF approval to use the larger dataset.
+Defaults to **smoke** (`DATA_SCALE=smoke`, UltraChat 10K). For the official
+~503K mix (UltraChat + Magpie-300K), rerun with `DATA_SCALE=full`.
 
 **Smoke-test slice** (recommended for the first end-to-end run):
 ```bash
@@ -151,7 +159,7 @@ bash /workspace/gpt-oss-eagle3/4_dump_hidden_states.sh
 du -sh /data/hidden_states/gpt-oss-120b
 ```
 
-Uses `run_hf_compute_hiddens_dp.sh` (data-parallel across all visible GPUs).
+Uses a data-parallel HF hidden-state dump (8 workers, one teacher per GPU).
 This is the slowest step on a 120B teacher — use the smoke slice first.
 
 ### Step 5 — Train container: EAGLE3 training + export
@@ -171,8 +179,10 @@ Monitor:
 tail -f /data/ckpts/gpt-oss-120b-eagle3/trainer_log*.txt
 ```
 
-Tunables in `eagle3_gpt_oss.yaml`:
-- `eagle.eagle_architecture_config.num_hidden_layers` (1 or 2)
+Tunables in `eagle3_gpt_oss.yaml` (aligned with
+[nvidia/gpt-oss-120b-Eagle3-long-context](https://huggingface.co/nvidia/gpt-oss-120b-Eagle3-long-context)):
+- `eagle.eagle_architecture_config.intermediate_size` (official: 17280)
+- `eagle.eagle_architecture_config.eagle_aux_hidden_state_layer_ids` (official: [1, 17, 32])
 - `training.per_device_train_batch_size`, `gradient_accumulation_steps`
 - `training.num_train_epochs`, `learning_rate`
 - `training.cp_size` (context parallel for long context)
@@ -186,10 +196,11 @@ bash 6_deploy_trtllm_container.sh
 docker logs -f trtllm-gpt-oss
 ```
 
-The script writes `/data/extra-llm-api-config.yml` matching blog11:
+The script writes `/data/extra-llm-api-config.yml` matching the
+[NVIDIA model card](https://huggingface.co/nvidia/gpt-oss-120b-Eagle3-long-context):
 ```yaml
 speculative_config:
-  decoding_type: Eagle3
+  decoding_type: Eagle
   max_draft_len: 3
   speculative_model_dir: /data/ckpts/gpt-oss-120b-eagle3-hf
 kv_cache_config:
@@ -254,7 +265,9 @@ docker logs -f trtllm-gpt-oss
 | `mkdir: cannot create '/data/...'` inside container | `/data` not bind-mounted; you exec'd into a stale container or ran on the host | `docker inspect gpt-oss-train --format '{{range .Mounts}}{{.Source}}->{{.Destination}}{{"\n"}}{{end}}'` ; if missing, `docker rm -f gpt-oss-train && bash 0_run_training_container.sh` |
 | `huggingface-cli ... FileNotFoundError '/data/models'` | `/data` exists but model parent dirs don't | `mkdir -p /data/models /data/prompts /data/synthetic /data/hidden_states /data/ckpts` |
 | `DatasetNotFoundError: ... is a gated dataset` | Need to "Agree" on HF dataset page with the same account as `HF_TOKEN` | Approve on HF, or use UltraChat-only path (default in step 2) |
-| `make_dataset.py: unrecognized arguments: --output_dir` | `make_dataset.py` reads output path from the yaml, not CLI | Already handled in `2_prepare_prompts.sh` (copies yaml to `/tmp` and patches) |
+| `make_dataset.py: unrecognized arguments: --output_dir` | `make_dataset.py` reads output path from the yaml, not CLI | Use `prompts_data_config.*.yaml` (`filename` points at `/data/prompts/active/train.jsonl`) |
+| `server_generate.py: unrecognized arguments: --port` | Upstream uses `--url`, not `--port` | Fixed in `3b_synthesize.sh` |
+| `KeyError: 'conversations'` during synthesis | `make_dataset.py` writes `messages`, `server_generate.py` reads `conversations` | Fixed in `3b_synthesize.sh` (auto-converts) |
 | `ModuleNotFoundError: No module named 'tensorrt'` | `tensorrt_llm` wheel didn't pull `tensorrt` as a hard dep | Don't install trt-llm into the training container — it's only needed in step 6's separate container |
 | vLLM `undefined symbol: _ZN3c104cuda...` | vLLM wheel compiled against a different libtorch than the 25.08 image | Don't pip-install vllm into the training container; use `3a_start_vllm_container.sh` |
 | `flashinfer-cubin version (X) does not match flashinfer version (Y)` | Same ABI hell as above | Same fix — use the dedicated vLLM container |
@@ -263,7 +276,7 @@ docker logs -f trtllm-gpt-oss
 | `Architecture 'GptOss...' not supported` | vLLM image too old | `docker pull vllm/vllm-openai:latest` or pin a known-good tag (≥ 0.10.2) |
 | `compute_hidden_states_hf.py` errors on gpt-oss arch | modelopt's draft loader doesn't recognize the model | Try `pip install -U --pre nvidia-modelopt`; otherwise open an issue, or pin an `eagle_decoder_type` override in the yaml |
 | `/data` fills up during step 4 | Hidden states for 120B teacher are huge | Use the smoke slice (`train.small.jsonl`); attach more NVMe before scaling |
-| Eagle3 not actually speculating in step 6 | `extra-llm-api-config.yml` typo or wrong path | Verify `decoding_type: Eagle3` (capital E) and `speculative_model_dir` points at the `-hf` export directory |
+| Eagle not actually speculating in step 6 | `extra-llm-api-config.yml` typo or wrong path | Verify `decoding_type: Eagle` and `speculative_model_dir` points at the `-hf` export directory |
 
 ---
 

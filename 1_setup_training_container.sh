@@ -19,7 +19,7 @@ fi
 
 # 2. modelopt + example deps. Pin transformers below the version that modelopt
 #    warns about, and reinstall without deps so pip doesn't bump torch again.
-pip install -U "nvidia-modelopt[hf]"
+pip install -U "nvidia-modelopt[hf]>=0.35.0"
 pip install -r Model-Optimizer/examples/speculative_decoding/requirements.txt
 pip install "transformers<4.57" "hf_transfer"
 
@@ -32,6 +32,7 @@ fi
 huggingface-cli download openai/gpt-oss-120b \
     --local-dir /data/models/gpt-oss-120b \
     --local-dir-use-symlinks False
+# MXFP4 checkpoint is ~61 GiB on disk (not full bf16 weights).
 
 nvidia-smi
 python -c "import modelopt, torch, transformers; print('modelopt', modelopt.__version__, 'torch', torch.__version__, 'cuda', torch.version.cuda, 'transformers', transformers.__version__)"

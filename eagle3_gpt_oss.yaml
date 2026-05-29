@@ -1,29 +1,59 @@
-# Eagle3 training recipe for gpt-oss-120b — overrides modelopt's default
-# eagle3.yaml. Keep the file beside the launch script and point launch_train.sh
-# at it with --config.
+# EAGLE3 offline training recipe for gpt-oss-120b.
+# Architecture matches nvidia/gpt-oss-120b-Eagle3-long-context config.json.
+# Use with: launch_train.sh --config /workspace/gpt-oss-eagle3/eagle3_gpt_oss.yaml
 
-defaults:
-  - ../../../Model-Optimizer/modelopt_recipes/general/speculative_decoding/eagle3.yaml
-  - _self_
+metadata:
+  recipe_type: speculative_eagle
+  description: EAGLE3 offline training for gpt-oss-120b (long-context).
 
 model:
   model_name_or_path: /data/models/gpt-oss-120b
-  # Offline training: we read teacher hidden states from disk.
   trust_remote_code: true
 
 data:
   offline_data_path: /data/hidden_states/gpt-oss-120b
-  # If you calibrated a draft vocab (step 6 optional), point to its d2t.pt here.
+  # Optional: point to draft_vocab_cache after running scripts/calibrate_draft_vocab.py
   # draft_vocab_cache: /data/draft_vocab/d2t.pt
 
 eagle:
-  # gpt-oss is a Llama-family decoder (RoPE, GQA). 1-layer EAGLE3 head is the
-  # default; bump to 2 if you have spare compute and want a higher acceptance rate.
+  eagle_decoder_type: llama
+  eagle_ttt_steps: 3
+  eagle_mix_hidden_states: false
+  eagle_use_torch_compile: true
+  eagle_self_logit_distillation: true
+  eagle_freeze_base_model: true
+  eagle_loss_decay_factor: 0.9
+  eagle_hidden_state_distillation: false
+  eagle_reuse_base_decoder: false
+  eagle_report_acc: true
+  eagle_enable_nvtx: false
+  # Long-context export rope scaling (llama3, 8K -> 131K), per official checkpoint.
+  eagle_export_rope_scaling:
+    rope_type: llama3
+    factor: 8.0
+    high_freq_factor: 4.0
+    low_freq_factor: 1.0
+    original_max_position_embeddings: 8192
   eagle_architecture_config:
     num_hidden_layers: 1
-    intermediate_size: 8192
-    # Uncomment to use a compressed draft vocab from scripts/calibrate_draft_vocab.py
-    # draft_vocab_size: 32000
+    hidden_size: 2880
+    intermediate_size: 17280
+    num_attention_heads: 64
+    num_key_value_heads: 8
+    head_dim: 64
+    use_aux_hidden_state: true
+    use_input_layernorm_in_first_layer: true
+    use_last_layernorm: true
+    use_mtp_layernorm: false
+    eagle_aux_hidden_state_layer_ids: [1, 17, 32]
+    max_position_embeddings: 131072
+    rope_theta: 500000.0
+    rope_scaling:
+      rope_type: llama3
+      factor: 8.0
+      high_freq_factor: 4.0
+      low_freq_factor: 1.0
+      original_max_position_embeddings: 8192
 
 training:
   output_dir: /data/ckpts/gpt-oss-120b-eagle3
@@ -37,5 +67,4 @@ training:
   logging_steps: 10
   save_steps: 1000
   save_total_limit: 3
-  # Long-context training across ranks (optional).
-  # cp_size: 2
+  training_seq_len: 2048

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Step 0 (host): start the TRAINING container.
 # Only modelopt + HF stack lives here. vLLM and TRT-LLM run in their own
-# containers (see 3a_start_vllm_server.sh and 6_deploy_trtllm.sh) because
+# containers (see 3a_start_vllm_container.sh and 6_deploy_trtllm_container.sh) because
 # NGC pytorch:25.08-py3 ships a custom libtorch that is ABI-incompatible
 # with the public vllm / tensorrt_llm wheels.
 set -euo pipefail

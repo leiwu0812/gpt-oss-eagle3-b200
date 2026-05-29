@@ -1,0 +1,14 @@
+# Smoke-test prompt mix (open datasets only, fast end-to-end validation).
+outputs:
+  - filename: "/data/prompts/active/train.jsonl"
+    global_limit: 10000
+    sources:
+      - name: "ultrachat"
+        splits:
+          train_gen: 5000
+          train_sft: 5000
+      - name: "magpie"
+        splits:
+          300k: 0
+          500k: 0
+          1M: 0

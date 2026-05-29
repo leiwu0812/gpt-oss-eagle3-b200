@@ -1,0 +1,15 @@
+# Full-scale prompt mix aligned with nvidia/gpt-oss-120b-Eagle3-long-context (~503K rows).
+# Only user-turn skeletons are kept (no --full-conversations) for SDDD synthesis.
+outputs:
+  - filename: "/data/prompts/active/train.jsonl"
+    global_limit: 503300
+    sources:
+      - name: "ultrachat"
+        splits:
+          train_gen: 250000
+          train_sft: 250000
+      - name: "magpie"
+        splits:
+          300k: 300000
+          500k: 0
+          1M: 0
