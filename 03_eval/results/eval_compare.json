@@ -32,5 +32,22 @@
     "n": 10,
     "label": "dry-run",
     "source_log": "eagle3_eval_smoke_metrics.log"
+  },
+  {
+    "tau": 1.0056780841723403,
+    "acceptance_length": 1.0056780841723403,
+    "accept_rate": 0.0018926947241134566,
+    "num_drafts": 38041,
+    "num_draft_tokens": 114123,
+    "num_accepted_tokens": 216,
+    "acceptance_per_pos": [
+      0.0055992218921689756,
+      5.2574853447596016e-05,
+      2.6287426723798008e-05
+    ],
+    "wall_s": 12.759943962097168,
+    "n": 80,
+    "label": "dry-run",
+    "source_log": "eagle3_eval_compare.log (recovered)"
   }
 ]
