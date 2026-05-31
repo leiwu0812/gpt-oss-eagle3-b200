@@ -1,0 +1,23 @@
+{
+  "run": "dry-run",
+  "epochs": 1,
+  "global_step": 8,
+  "log_history": [
+    {
+      "epoch": 0.6451612903225806,
+      "grad_norm": 259.6911315917969,
+      "learning_rate": 6.112604669781572e-05,
+      "loss": 248.9115,
+      "step": 5
+    },
+    {
+      "epoch": 1.0,
+      "step": 8,
+      "total_flos": 4843058004754432.0,
+      "train_loss": 228.1843490600586,
+      "train_runtime": 26.6143,
+      "train_samples_per_second": 18.674,
+      "train_steps_per_second": 0.301
+    }
+  ]
+}

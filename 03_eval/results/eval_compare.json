@@ -1,0 +1,36 @@
+[
+  {
+    "tau": 2.1602042534088994,
+    "acceptance_length": 2.1602042534088994,
+    "accept_rate": 0.38673475113629985,
+    "num_drafts": 17821,
+    "num_draft_tokens": 53463,
+    "num_accepted_tokens": 20676,
+    "acceptance_per_pos": [
+      0.5678132540261489,
+      0.3472869087032153,
+      0.24510409067953537
+    ],
+    "wall_s": 10.86671233177185,
+    "n": 80,
+    "label": "ref-eagle3",
+    "source_log": "eagle3_eval_ref_only.log"
+  },
+  {
+    "tau": 1.0008557980316646,
+    "acceptance_length": 1.0008557980316646,
+    "accept_rate": 0.0002852660105548424,
+    "num_drafts": 4674,
+    "num_draft_tokens": 14022,
+    "num_accepted_tokens": 4,
+    "acceptance_per_pos": [
+      0.0008557980316645272,
+      0.0,
+      0.0
+    ],
+    "wall_s": 8.798306941986084,
+    "n": 10,
+    "label": "dry-run",
+    "source_log": "eagle3_eval_smoke_metrics.log"
+  }
+]
