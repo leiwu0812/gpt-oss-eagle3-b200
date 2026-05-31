@@ -5,9 +5,10 @@ Reproduce the EAGLE3 speculative-decoding draft model for
 matching the configuration of NVIDIA's reference checkpoint
 [`nvidia/gpt-oss-120b-Eagle3-long-context`](https://huggingface.co/nvidia/gpt-oss-120b-Eagle3-long-context).
 
-Training uses **NVIDIA Model Optimizer (ModelOpt)** with **on-the-fly hidden
-state collection** — the 120B target and the 215M draft co-reside on a single
-8×B200 node, so no multi-TB hidden-state cache hits disk.
+Training uses **NVIDIA Model Optimizer (ModelOpt)** via
+`examples/speculative_decoding/launch_train.sh`. For gpt-oss-120b on 8×B200 the
+**offline path** (teacher hidden states on disk + draft-only training) is the
+practical default; on-the-fly co-resident training OOMs with standard 8-GPU DDP.
 
 ---
 
@@ -35,15 +36,22 @@ Source paper: <https://arxiv.org/html/2604.09557v1> (Appendix H).
 
 ```
 .
-├── 00_env/setup.sh                # venv + ModelOpt + vLLM + model downloads
+├── 00_env/
+│   ├── setup.sh                   # venv + ModelOpt + vLLM (needs python3-venv)
+│   └── setup_docker.sh            # Docker path for DGX / Ubuntu 24.04
 ├── 01_data/
-│   ├── prepare.py                 # Nemotron V2 sub-sample (multilingual ×0.1)
-│   └── regenerate.py              # vLLM TP=8, randomized effort & temp
+│   ├── prepare.py                 # Nemotron V2 or UltraChat fallback
+│   ├── regenerate.py              # vLLM TP=8, randomized effort & temp
+│   └── convert_regen.py           # regen.jsonl -> ModelOpt train.jsonl
 ├── 02_train/
-│   ├── train.sh                   # accelerate + ModelOpt EAGLE3 launcher
-│   └── README.md                  # topology / RoPE / resume notes
+│   ├── train.sh                   # convert + HS dump + offline EAGLE3
+│   ├── dump_hidden_states.sh      # single-process teacher HS collection
+│   └── README.md                  # offline/online notes, RoPE, resume
 ├── 03_eval/eval_acceptance.py     # vLLM spec decoding, MT-Bench τ
-├── configs/draft_config.json      # 1:1 with HF reference draft config
+├── configs/
+│   ├── draft_config.json          # 1:1 with HF reference draft config
+│   ├── eagle3_gpt_oss_offline.yaml
+│   └── eagle3_gpt_oss_online.yaml # experimental; OOM on 120B DDP
 ├── EAGLE3_PIPELINE_ANALYSIS.md    # background notes on pipeline design
 └── logs/                          # training logs (gitignored)
 ```
@@ -64,22 +72,23 @@ Source paper: <https://arxiv.org/html/2604.09557v1> (Appendix H).
 End-to-end sanity check; ~3 hours total on 8×B200.
 
 ```bash
-# 1. Environment + model download (~30 min, mostly download)
-bash 00_env/setup.sh
-source ~/eagle3-gptoss/.venv/bin/activate     # path created by setup.sh
+# 1. Environment (Docker recommended on DGX without python3-venv)
+bash 00_env/setup_docker.sh          # or: bash 00_env/setup.sh && source ~/eagle3-gptoss/.venv/bin/activate
+docker exec -it eagle3-train bash
+export EAGLE3_ROOT=/workspace/eagle3-gptoss MODEL_ROOT=/workspace/models
+pip install -e /tmp/Model-Optimizer[hf]   # git clone done by train.sh if missing
 
-# 2. Sub-sample 5k prompts from Nemotron V2
-python 01_data/prepare.py --n 5000
+# 2. Sub-sample 5k prompts (Nemotron V2, or UltraChat if gated)
+python 01_data/prepare.py --n 5000 --dataset auto
 
 # 3. Regenerate responses with gpt-oss-120b (vLLM TP=8, ~1–2 h)
 python 01_data/regenerate.py
 
-# 4. Train EAGLE3 draft (1 epoch, ~30 min for 5k)
-bash 02_train/train.sh
+# 4. Train EAGLE3 draft: convert -> HS dump (500 rows) -> offline train -> export
+HS_SUBSET=500 bash 02_train/train.sh
 
 # 5. Evaluate acceptance length on MT-Bench
-python 03_eval/eval_acceptance.py \
-    --draft ./ckpt/dry-run
+python 03_eval/eval_acceptance.py --draft ~/eagle3-gptoss/ckpt/dry-run-hf
 ```
 
 A τ ≥ 2.0 on the dry-run is enough to validate the pipeline. Scale up to
@@ -91,20 +100,20 @@ A τ ≥ 2.0 on the dry-run is enough to validate the pipeline. Scale up to
 
 ```bash
 # Data prep (multi-hour generation, ideally launched in tmux/screen)
-python 01_data/prepare.py    --n 500000
+python 01_data/prepare.py --n 500000 --dataset auto
 python 01_data/regenerate.py --batch 256        # 2–4 days on 8×B200
 
-# Training (multi-day)
-bash 02_train/train.sh   # edit OUT, --train_data, drop dry-run knobs if needed
+# Training (multi-day): unset HS_SUBSET for full hidden-state dump
+unset HS_SUBSET
+# edit configs/eagle3_gpt_oss_offline.yaml: num_train_epochs 3, output_dir ckpt/full
+bash 02_train/train.sh
 ```
 
-Adjust in `02_train/train.sh`:
-
-| Flag | Dry-run | Full |
+| Knob | Dry-run | Full |
 | --- | --- | --- |
-| `--train_data` | `01_data/regen.jsonl` (5k) | `01_data/regen_500k.jsonl` |
-| `--epochs` | 1 | 3 |
-| `--output_dir` | `ckpt/dry-run` | `ckpt/full` |
+| `HS_SUBSET` | `500` (default) | unset (all rows) |
+| `num_train_epochs` (yaml) | 1 | 3 |
+| `training.output_dir` | `ckpt/dry-run` | `ckpt/full` |
 
 ---
 
@@ -124,11 +133,13 @@ the deployed range. The Eagle3 paper notes that earlier public checkpoints
 degraded at long context due to RoPE misconfiguration — preserve this block
 exactly when modifying `configs/draft_config.json`.
 
-### Why on-the-fly hidden states?
-Offline cache for 500k × 8k tokens × 3 layers × 2880 dim × bf16 ≈ 25 TB.
-With 8×B200 we have plenty of HBM to keep the target resident
-(TP=4, ~60 GB / GPU) while the draft replicates across all 8 GPUs (DP=8).
-Cost: ~30% slower step than offline, no disk pressure.
+### Offline vs on-the-fly hidden states
+Offline cache for 500k × 8k tokens × 3 layers × 2880 dim × bf16 is multi-TB,
+but **gpt-oss-120b on-the-fly training with 8-GPU DDP loads the full target
+per rank and OOMs on B200**. This repo defaults to offline HS dump
+(`dump_hidden_states.sh`, single process + `device_map=auto`) followed by
+draft-only training. See `configs/eagle3_gpt_oss_online.yaml` for the
+experimental online recipe when ModelOpt adds TP mesh support.
 
 ### Vocab pruning
 Disabled (`draft_vocab_size: null`). Matches reference checkpoint. Pruning
@@ -164,8 +175,11 @@ YAML
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `ModuleNotFoundError: modelopt.torch.speculative.eagle.train` | ModelOpt version mismatch | `python -m modelopt.torch.speculative.eagle --help` to find correct entry; update `02_train/train.sh` |
-| OOM on target during on-the-fly | TP/DP misplanned | Drop `--target_tp/--draft_dp`, let ModelOpt auto-plan, or raise `--target_tp` to 8 |
+| `ModuleNotFoundError: modelopt.torch.speculative.eagle.train` | Wrong entry point | Use `launch_train.sh` + yaml configs (fixed in `02_train/train.sh`) |
+| OOM during online training | Full 120B per DDP rank | Use offline path; set `HS_SUBSET=500` for dry-run |
+| CUDA error during HS dump (MXFP4) | HF dequantizes MXFP4 to bf16 | Use TRT-LLM HS dump or MXFP4 Triton kernels; see ModelOpt docs |
+| `python3-venv` missing on Ubuntu 24.04 | No system venv | Use `00_env/setup_docker.sh` |
+| Nemotron dataset gated | HF access | `prepare.py --dataset ultrachat` or `--dataset auto` |
 | τ < 1.5 after full training | Aux layer ids / RoPE drift from target | Verify `configs/draft_config.json` matches the HF reference byte-for-byte |
 | Long-context τ collapses | RoPE scaling mismatch | Re-confirm `rope_scaling` block; never swap llama3 ↔ YaRN |
 | vLLM regenerate slow | Prefix cache off | Confirm `enable_prefix_caching=True` (default in `01_data/regenerate.py`) |

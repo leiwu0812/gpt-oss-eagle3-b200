@@ -1,39 +1,47 @@
 #!/usr/bin/env bash
-# EAGLE3 draft training for gpt-oss-120b, on-the-fly hidden states.
-# 8 x B200. Dry-run defaults; for full 500k run bump --epochs/--data and resources.
+# EAGLE3 draft training for gpt-oss-120b via NVIDIA Model-Optimizer.
+# Default: offline path (hidden states on disk + draft-only training).
+# Online/on-the-fly training OOMs on 120B with standard 8-GPU DDP — see README.
 set -euo pipefail
 
-ROOT=~/eagle3-gptoss
-DATA=${ROOT}/01_data/regen.jsonl
-OUT=${ROOT}/ckpt/dry-run
-TARGET=~/models/gpt-oss-120b
-DRAFT_CFG=${ROOT}/configs/draft_config.json
+ROOT="${EAGLE3_ROOT:-$HOME/eagle3-gptoss}"
+MODEL="${MODEL_ROOT:-$HOME/models}/gpt-oss-120b"
+MODELOPT="${MODELOPT_ROOT:-/tmp/Model-Optimizer}"
+OUT="${ROOT}/ckpt/dry-run"
+MO="${MODELOPT}/examples/speculative_decoding"
+CFG="${ROOT}/configs/eagle3_gpt_oss_offline.yaml"
+HS_SUBSET="${HS_SUBSET:-500}"  # dry-run: dump hidden states for first N rows
 
 mkdir -p "${OUT}" "${ROOT}/logs"
 
-# ModelOpt's EAGLE3 launcher.  Module path matches modelopt>=0.35.
-# Layer ids [1,17,32] match nvidia/gpt-oss-120b-Eagle3-long-context.
-accelerate launch \
-  --num_processes 8 \
-  --num_machines 1 \
-  --mixed_precision bf16 \
-  -m modelopt.torch.speculative.eagle.train \
-  --target_model "${TARGET}" \
-  --draft_config "${DRAFT_CFG}" \
-  --train_data "${DATA}" \
-  --output_dir "${OUT}" \
-  --aux_hidden_state_layer_ids 1 17 32 \
-  --on_the_fly_hidden_states true \
-  --target_tp 4 \
-  --draft_dp 8 \
-  --epochs 3 \
-  --global_batch_size 128 \
-  --per_device_batch_size 1 \
-  --grad_accum 16 \
-  --seq_len 8192 \
-  --optimizer adamw \
-  --lr 3e-4 --min_lr 1e-4 \
-  --lr_scheduler cosine --warmup_ratio 0.03 \
-  --weight_decay 0.0 \
-  --save_steps 500 --logging_steps 10 \
+# Ensure ModelOpt is installed from git (PyPI wheel lacks hf_eagle plugin).
+if [[ ! -d "${MODELOPT}/.git" ]]; then
+  git clone --depth 1 https://github.com/NVIDIA/Model-Optimizer.git "${MODELOPT}"
+fi
+pip install -q -e "${MODELOPT}[hf]"
+pip install -q -r "${MO}/requirements.txt"
+
+# Convert vLLM regen output -> ModelOpt conversation JSONL
+python "${ROOT}/01_data/convert_regen.py" \
+  --in "${ROOT}/01_data/regen.jsonl" \
+  --out "${ROOT}/01_data/train.jsonl"
+
+# Step 1: dump teacher hidden states (single process, all GPUs)
+bash "$(dirname "$0")/dump_hidden_states.sh" \
+  "${ROOT}/01_data/train.jsonl" "${HS_SUBSET}"
+
+# Step 2: offline EAGLE3 training (draft only; base is fake/offline)
+cd "${MO}"
+bash launch_train.sh --config "${CFG}" \
+  model.model_name_or_path="${MODEL}" \
+  data.offline_data_path="${ROOT}/hidden_states/gpt-oss-120b" \
+  training.output_dir="${OUT}" \
   2>&1 | tee "${ROOT}/logs/train_$(date +%Y%m%d_%H%M%S).log"
+
+# Step 3: export HF checkpoint for vLLM / TRT-LLM deployment
+python scripts/export_hf_checkpoint.py \
+  --input_dir "${OUT}" \
+  --output_dir "${OUT}-hf" \
+  --trust_remote_code
+
+echo "Draft checkpoint: ${OUT}-hf"

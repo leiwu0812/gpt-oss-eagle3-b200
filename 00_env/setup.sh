@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Environment setup for EAGLE3 draft training on gpt-oss-120b (8xB200)
 set -euo pipefail
+# On DGX/Ubuntu 24.04 without python3-venv, use: bash 00_env/setup_docker.sh
 
 # CUDA 12.4+ assumed. Use a fresh venv.
 python -m venv ~/eagle3-gptoss/.venv
